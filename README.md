@@ -2,6 +2,12 @@
 
 This script exports flowdock conversations to .html.
 
+First, set the environment.
+
+    $  export FD_TOKEN="your_token_here"
+    $ # notice the leading space to keep the token from being
+    $ # part of your bash-history.
+
 For example, get a list of users:
 
     ./export users
