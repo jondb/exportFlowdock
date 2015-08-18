@@ -1,0 +1,209 @@
+#!/usr/bin/env python
+#flowdock
+
+import codecs
+
+import requests
+import os
+import sys
+import json
+import cgi
+import datetime
+
+
+class FlowDock(object):
+  baseUrl = 'https://api.flowdock.com'
+
+  def __init__(self, token):
+    self.auth = (token,'')
+    self.users = self.getUsers()
+    self.flows = self.getFlows()
+
+  def get(self, path, params={}):
+    if path.startswith('http'):
+      url = path
+    else:
+      url = self.baseUrl + path
+    return requests.get(url, params=params, auth=self.auth).json()
+
+  def getUsers(self):
+    user_map = {}
+    users = self.get('/users/')
+    for user in users:
+      del user['avatar']
+      del user['website']
+      user_map[user['id']] = user
+    return user_map
+
+  def getFlows(self):
+    flows = self.get('/flows')
+    cleaned_flows = []
+    for flow in flows:
+      data = {
+            'parameterized_name': flow['parameterized_name'],
+            'url': flow['url'],
+            'organization_parameterized_name': flow['organization']['parameterized_name']
+        }
+      cleaned_flows.append(data)
+    return cleaned_flows
+
+  def findFlowUrl(self,name):
+    for flow in self.flows:
+      if flow['parameterized_name'] == name:
+        return flow['url']
+
+  def getFlow(self, flow_name, limit=0):
+    url = self.findFlowUrl(flow_name)  + '/messages'
+    return self.getMessages(url, limit)
+
+  def getPrivate(self, user_id, limit=0):
+    url =  "/private/%s/messages" % user_id
+    return self.getMessages(url, limit)
+
+  def getMessages(self, url, limit=0):
+    last_seen = None
+    messages = []
+    params = {
+      'limit': limit if limit > 0 else 100,
+      'sort': 'asc'
+    }
+
+    while True:
+      if last_seen:
+        params['since_id'] = last_seen
+
+      new_msgs = self.get(url, params)
+      print "messages %s" % len(new_msgs)
+      messages.extend(new_msgs)
+
+      if len(new_msgs) == 0 or (limit and len(messages) >= limit):
+        break
+
+      last_seen = new_msgs[-1]['id']
+      print last_seen, new_msgs[-1]
+    
+    return messages
+
+  def getUserName(self, userId):
+    userId = int(userId)
+    if userId in self.users:
+      user = self.users.get(userId)
+      return "%s/%s" % (user['nick'], user['name'])
+    else:
+      return str(userId)
+
+  def formatMessages(self, messages):
+    cleaned_messages = []
+    for message in messages:
+      if message['event'] == 'message':
+        user = cgi.escape(self.getUserName(message['user']))
+        _id = cgi.escape(str(message['id']))
+        content = cgi.escape(message['content'])
+        try:
+          date = datetime.datetime.utcfromtimestamp(int(message['sent']/1000))
+        except ValueError:
+          print message['sent']
+          raise
+        cleaned_message = "<div class=\"message\"><div class=\"date\">%s</div><span class=\"user\">%s:</span><span class=\"content\">%s</span><span class=\"id\">%s</span></div>" % (
+              date, user, content, _id)
+        cleaned_messages.append(cleaned_message)
+    return cleaned_messages
+
+  def save(self, file, messages):
+    with codecs.open(ofile, 'w', 'utf-8') as fo:
+      fo.write('''<html><head><meta charset="UTF-8"><style>
+.message {
+  padding: .15em 0;
+}
+.date {
+  display:inline;
+  margin-right: 1em;
+  font-size: .75em;
+}
+.user {
+  font-weight: bold;
+  margin-right: 1em;
+  font-size: .75em;
+}
+.content {
+  word-break: break-all;
+  word-wrap: break-word;
+  white-space: pre;
+}
+.id {
+  margin-left: 1em;
+  font-size: .75em;
+  color: grey;
+}
+</style></head>''')
+      for line in messages:
+        fo.write(line)
+      print "wrote %s lines to file %s" % (len(messages), ofile)
+
+
+if __name__ == "__main__":
+  token = os.environ['FD_TOKEN']
+
+  try:
+    cmd = sys.argv[1]
+    print "CMD: %s" % cmd,
+    if cmd == 'flow': flow_name = sys.argv[2]
+    if cmd == 'private': user_id = sys.argv[2]
+    if cmd == 'tohtml': filename = sys.argv[2]
+
+    if cmd in ('tohtml', 'flow', 'private'):
+      ofile = sys.argv[3]
+      print " OFILE: %s" % ofile,
+
+    if cmd in ('flow', 'private'):
+      if len(sys.argv) > 4:
+        limit = int(sys.argv[4])
+      else:
+        limit = 0
+      print " LIMIT: %s" % limit,
+
+    print
+  except:
+    cmd = None
+    # raise
+
+  if not token or cmd not in ('users', 'flows', 'flow', 'private', 'tohtml'):
+    print ("Usage: set FD_TOKEN environment\n"
+            "\t%s <cmd> opts\n"
+            "\t%s users\n"
+            "\t%s flows\n"
+            "\t%s flow <flowName> [limit]\n"
+            "\t%s private <userId> [limit]\n"
+            "\t%s makepretty <inputfile.json> <outputfile.html>\n"
+            ) % (sys.argv[0], sys.argv[0], sys.argv[0], sys.argv[0], sys.argv[0], sys.argv[0])
+    sys.exit(-1)
+
+  FD = FlowDock(token)
+
+  if cmd == 'users': print '\n'.join([str(FD.users[u]) for u in FD.users])
+  if cmd == 'flows': print '\n'.join([str(flow) for flow in FD.flows])
+
+  if cmd == 'flow': 
+    cleaned = FD.formatMessages(FD.getFlow(flow_name, limit=limit))
+    FD.save(ofile, cleaned)
+
+  if cmd == 'private':
+    msgs = FD.formatMessages(FD.getPrivate(user_id, limit=limit))
+    FD.save(ofile, msgs)
+
+  if cmd == 'tohtml':
+    with codecs.open(filename, 'r', 'utf-8') as f:
+      messages = json.load(f)
+    cleaned = FD.formatMessages(messages)
+    FD.save(ofile, cleaned)
+
+
+
+    
+
+
+
+
+
+
+
